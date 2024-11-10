@@ -1,0 +1,84 @@
+- name: Kubernetes Cluster Setup
+  hosts: all
+  become: yes
+  tasks:
+  - name: Update and install dependencies
+    apt:
+      name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      state: present
+      update_cache: yes
+
+  - name: Add Kubernetes GPG key
+    shell: curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+
+  - name: Add Kubernetes apt repository
+    apt_repository:
+      repo: "deb https://apt.kubernetes.io/ kubernetes-xenial main"
+      state: present
+
+  - name: Install kubelet, kubeadm, and kubectl
+    apt:
+      name:
+      - kubelet
+      - kubeadm
+      - kubectl
+      state: latest
+      update_cache: yes
+
+  - name: Hold kubelet, kubeadm, and kubectl packages at current version
+    apt:
+      name:
+      - kubelet
+      - kubeadm
+      - kubectl
+      state: present
+      hold: yes
+
+- name: Initialize Kubernetes Control Plane
+  hosts: control_plane
+  become: yes
+  tasks:
+  - name: Initialize kubeadm
+    shell: |
+      kubeadm init --pod-network-cidr=10.244.0.0/16
+    register: kubeadm_init_output
+    ignore_errors: true
+
+  - name: Create .kube directory for kubectl
+    file:
+      path: /home/ubuntu/.kube
+      state: directory
+      mode: '0755'
+      owner: ubuntu
+      group: ubuntu
+
+  - name: Copy kubeconfig to user home
+    copy:
+      src: /etc/kubernetes/admin.conf
+      dest: /home/ubuntu/.kube/config
+      remote_src: yes
+      owner: ubuntu
+      group: ubuntu
+      mode: '0644'
+
+  - name: Apply Calico CNI
+    shell: |
+      kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+    environment:
+      KUBECONFIG: /etc/kubernetes/admin.conf
+
+  - name: Get join command for worker nodes
+    shell: |
+      kubeadm token create --print-join-command
+    register: kubeadm_join_command
+
+- name: Join Worker Nodes to the Cluster
+  hosts: worker_nodes
+  become: yes
+  tasks:
+  - name: Run kubeadm join on worker node
+    shell: "{{ hostvars['control_plane'].kubeadm_join_command.stdout }}"
+    ignore_errors: true
